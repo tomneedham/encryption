@@ -221,6 +221,11 @@ class Recovery {
 		$dirContent = $this->view->getDirectoryContent($path);
 		foreach ($dirContent as $item) {
 			$filePath = $item->getPath();
+			// only add key for files owned by the user
+			if($item->getStorage()->instanceOfStorage('OC\Files\Storage\Shared')) {
+				\OC::$server->getLogger()->debug(__METHOD__." for '$filePath', is shared storage, skipping", ['app'=>'encryption']);
+				continue;
+			}
 			if ($item['type'] === 'dir') {
 				$this->addRecoveryKeys($filePath . '/');
 			} else {
