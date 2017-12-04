@@ -295,6 +295,11 @@ class Recovery {
 		foreach ($dirContent as $item) {
 			// Get relative path from encryption/keyfiles
 			$filePath = $item->getPath();
+			// only add key for files owned by the user
+			if($item->getStorage()->instanceOfStorage('OC\Files\Storage\Shared')) {
+				\OC::$server->getLogger()->debug(__METHOD__." for '$filePath', is shared storage, skipping", ['app'=>'encryption']);
+				continue;
+			}
 			if ($this->view->is_dir($filePath)) {
 				$this->recoverAllFiles($filePath . '/', $privateKey, $uid);
 			} else {
