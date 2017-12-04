@@ -26,14 +26,15 @@ namespace OCA\Encryption;
 
 
 use OCA\Encryption\Crypto\Crypt;
+use OCP\Encryption\IFile;
 use OCP\Encryption\Keys\IStorage;
+use OCP\Files\FileInfo;
 use OCP\IConfig;
 use OCP\IUser;
 use OCP\IUserSession;
 use OCP\PreConditionNotMetException;
 use OCP\Security\ISecureRandom;
 use OC\Files\View;
-use OCP\Encryption\IFile;
 
 class Recovery {
 
@@ -221,9 +222,7 @@ class Recovery {
 		$dirContent = $this->view->getDirectoryContent($path);
 		foreach ($dirContent as $item) {
 			$filePath = $item->getPath();
-			// only add key for files owned by the user
-			if($item->getStorage()->instanceOfStorage('OC\Files\Storage\Shared')) {
-				\OC::$server->getLogger()->debug(__METHOD__." for '$filePath', is shared storage, skipping", ['app'=>'encryption']);
+			if($this->isSharedStorage($item)) {
 				continue;
 			}
 			if ($item['type'] === 'dir') {
@@ -254,9 +253,7 @@ class Recovery {
 		$dirContent = $this->view->getDirectoryContent($path);
 		foreach ($dirContent as $item) {
 			$filePath = $item->getPath();
-			// only add key for files owned by the user
-			if($item->getStorage()->instanceOfStorage('OC\Files\Storage\Shared')) {
-				\OC::$server->getLogger()->debug(__METHOD__." for '$filePath', is shared storage, skipping", ['app'=>'encryption']);
+			if($this->isSharedStorage($item)) {
 				continue;
 			}
 			if ($item['type'] === 'dir') {
@@ -295,9 +292,7 @@ class Recovery {
 		foreach ($dirContent as $item) {
 			// Get relative path from encryption/keyfiles
 			$filePath = $item->getPath();
-			// only add key for files owned by the user
-			if($item->getStorage()->instanceOfStorage('OC\Files\Storage\Shared')) {
-				\OC::$server->getLogger()->debug(__METHOD__." for '$filePath', is shared storage, skipping", ['app'=>'encryption']);
+			if($this->isSharedStorage($item)) {
 				continue;
 			}
 			if ($this->view->is_dir($filePath)) {
@@ -341,5 +336,21 @@ class Recovery {
 
 	}
 
+	/**
+	 * check if the item is on a shared storage
+	 * @param FileInfo $item
+	 * @return bool
+	 */
+	protected function isSharedStorage(FileInfo $item) {
+		// hardcoded class to prevent dependency on files_sharing app
+		// TODO: add filter callback to view::getDirectoryContent() or its successor
+		// so we can filter by more than just mimetype
+		if($item->getStorage()->instanceOfStorage( 'OCA\Files_Sharing\ISharedStorage')) {
+			$filePath = $item->getPath();
+			\OC::$server->getLogger()->debug(__METHOD__." for '$filePath', is shared storage, skipping", ['app'=>'encryption']);
+			return true;
+		}
+		return false;
+	}
 
 }
