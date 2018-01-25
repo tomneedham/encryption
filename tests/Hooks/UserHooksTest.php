@@ -29,8 +29,12 @@ namespace OCA\Encryption\Tests\Hooks;
 
 
 use OCA\Encryption\Crypto\Crypt;
+use OCP\ISession;
 use OCA\Encryption\Hooks\UserHooks;
+use Symfony\Component\EventDispatcher\EventDispatcher;
+use Symfony\Component\EventDispatcher\GenericEvent;
 use Test\TestCase;
+use Test\Traits\UserTrait;
 
 /**
  * Class UserHooksTest
@@ -39,6 +43,7 @@ use Test\TestCase;
  * @package OCA\Encryption\Tests\Hooks
  */
 class UserHooksTest extends TestCase {
+	use UserTrait;
 	/**
 	 * @var \PHPUnit_Framework_MockObject_MockObject
 	 */
@@ -81,7 +86,10 @@ class UserHooksTest extends TestCase {
 	 */
 	private $instance;
 
-	private $params = ['uid' => 'testUser', 'password' => 'password'];
+	/** @var  EventDispatcher */
+	private $eventDispatcher;
+
+	private $params;
 
 	public function testLogin() {
 		$this->userSetupMock->expects($this->once())
@@ -95,10 +103,36 @@ class UserHooksTest extends TestCase {
 		$this->assertNull($this->instance->login($this->params));
 	}
 
+	public function testLoginDispatcherEvent() {
+		$this->keyManagerMock->expects($this->any())
+			->method('userHasKeys')
+			->willReturn(true);
+
+		$this->userSetupMock->expects($this->any())
+			->method('setupUser')
+			->willReturn(true);
+
+		$this->keyManagerMock->expects($this->once())
+			->method('init')
+			->with('testUser', 'password');
+
+		$this->instance->addHooks();
+		\OC::$server->getEventDispatcher()->dispatch('user.beforelogin', $this->params);
+		$this->assertTrue(true);
+	}
+
 	public function testLogout() {
 		$this->sessionMock->expects($this->once())
 			->method('clear');
 		$this->instance->logout();
+		$this->assertTrue(true);
+	}
+
+	public function testLogoutDispatcherEvent() {
+		$this->sessionMock->expects($this->once())
+			->method('clear');
+		$this->instance->addHooks();
+		\OC::$server->getEventDispatcher()->dispatch('user.beforelogout', new GenericEvent(null, []));
 		$this->assertTrue(true);
 	}
 
@@ -110,12 +144,30 @@ class UserHooksTest extends TestCase {
 		$this->assertTrue(true);
 	}
 
+	public function testPostCreateUserDispatcherEvent() {
+		$this->userSetupMock->expects($this->once())
+			->method('setupUser')
+			->willReturn(true);
+		$this->instance->addHooks();
+		\OC::$server->getEventDispatcher()->dispatch('user.aftercreateuser', $this->params);
+		$this->assertTrue(true);
+	}
+
 	public function testPostDeleteUser() {
 		$this->keyManagerMock->expects($this->once())
 			->method('deletePublicKey')
 			->with('testUser');
 
 		$this->instance->postDeleteUser($this->params);
+		$this->assertTrue(true);
+	}
+
+	public function testPostDeleteUserDispatcherEvent() {
+		$this->keyManagerMock->expects($this->once())
+			->method('deletePublicKey')
+			->with('testUser');
+		$this->instance->addHooks();
+		\OC::$server->getEventDispatcher()->dispatch('user.afterdelete', $this->params);
 		$this->assertTrue(true);
 	}
 
@@ -136,7 +188,8 @@ class UserHooksTest extends TestCase {
 					$this->utilMock,
 					$this->sessionMock,
 					$this->cryptMock,
-					$this->recoveryMock
+					$this->recoveryMock,
+					$this->eventDispatcher
 				]
 			)
 			->setMethods(['setPassphrase'])
@@ -164,6 +217,56 @@ class UserHooksTest extends TestCase {
 		}
 
 		$instance->preSetPassphrase($this->params);
+	}
+
+	/**
+	 * @dataProvider dataTestPreSetPassphrase
+	 * @param $canChange
+	 */
+	public function testPreSetPassphraseDispatcherEvent($canChange) {
+
+		/** @var UserHooks | \PHPUnit_Framework_MockObject_MockObject  $instance */
+		$instance = $this->getMockBuilder('OCA\Encryption\Hooks\UserHooks')
+			->setConstructorArgs(
+				[
+					$this->keyManagerMock,
+					$this->userManagerMock,
+					$this->loggerMock,
+					$this->userSetupMock,
+					$this->userSessionMock,
+					$this->utilMock,
+					$this->sessionMock,
+					$this->cryptMock,
+					$this->recoveryMock,
+					$this->eventDispatcher
+				]
+			)
+			->setMethods(['setPassphrase'])
+			->getMock();
+
+		$userMock = $this->createMock('OCP\IUser');
+
+		$this->userManagerMock->expects($this->once())
+			->method('get')
+			->with($this->params['uid'])
+			->willReturn($userMock);
+		$userMock->expects($this->once())
+			->method('canChangePassword')
+			->willReturn($canChange);
+
+		if ($canChange) {
+			// in this case the password will be changed in the post hook
+			$instance->expects($this->never())->method('setPassphrase');
+		} else {
+			// if user can't change the password we update the encryption
+			// key password already in the pre hook
+			$instance->expects($this->once())
+				->method('setPassphrase')
+				->with($this->params);
+		}
+		$instance->addHooks();
+		\OC::$server->getEventDispatcher()->dispatch('user.beforesetpassword', $this->params);
+		$this->assertTrue(true);
 	}
 
 	public function dataTestPreSetPassphrase() {
@@ -215,7 +318,8 @@ class UserHooksTest extends TestCase {
 					$this->utilMock,
 					$this->sessionMock,
 					$this->cryptMock,
-					$this->recoveryMock
+					$this->recoveryMock,
+					$this->eventDispatcher
 				]
 			)->setMethods(['initMountPoints'])->getMock();
 
@@ -251,6 +355,36 @@ class UserHooksTest extends TestCase {
 		$this->assertNull($this->instance->setPassphrase($this->params));
 	}
 
+	public function testSetPassphraseDispatcherEvent() {
+		\OC::$server->getSession()->set('privateKey', "Hello");
+		$this->instance->addHooks();
+		$this->keyManagerMock->expects($this->any())
+			->method('getPublicKey')
+			->willReturn("foo");
+		$this->sessionMock->expects($this->exactly(1))
+			->method('getPrivateKey')
+			->willReturnOnConsecutiveCalls(true, false);
+
+		$this->cryptMock->expects($this->exactly(1))
+			->method('encryptPrivateKey')
+			->willReturn(true);
+
+		$this->cryptMock->expects($this->any())
+			->method('generateHeader')
+			->willReturn(Crypt::HEADER_START . ':Cipher:test:' . Crypt::HEADER_END);
+
+		$this->keyManagerMock->expects($this->exactly(1))
+			->method('setPrivateKey')
+			->willReturnCallback(function ($user, $key) {
+				$header = substr($key, 0, strlen(Crypt::HEADER_START));
+				$this->assertSame(
+					Crypt::HEADER_START,
+					$header, 'every encrypted file should start with a header');
+			});
+
+		\OC::$server->getEventDispatcher()->dispatch('user.aftersetpassphrase', $this->params);
+	}
+
 	public function testSetPasswordNoUser() {
 		$this->sessionMock->expects($this->once())
 			->method('getPrivateKey')
@@ -278,7 +412,8 @@ class UserHooksTest extends TestCase {
 					$this->utilMock,
 					$this->sessionMock,
 					$this->cryptMock,
-					$this->recoveryMock
+					$this->recoveryMock,
+					$this->eventDispatcher
 				]
 			)->setMethods(['initMountPoints'])->getMock();
 
@@ -301,6 +436,7 @@ class UserHooksTest extends TestCase {
 
 	protected function setUp() {
 		parent::setUp();
+		$this->createUser('testUser');
 		$this->loggerMock = $this->createMock('OCP\ILogger');
 		$this->keyManagerMock = $this->getMockBuilder('OCA\Encryption\KeyManager')
 			->disableOriginalConstructor()
@@ -351,6 +487,8 @@ class UserHooksTest extends TestCase {
 		$this->utilMock = $utilMock;
 		$this->utilMock->expects($this->any())->method('isMasterKeyEnabled')->willReturn(false);
 
+		$this->eventDispatcher = \OC::$server->getEventDispatcher();
+
 		$this->instance = $this->getMockBuilder('OCA\Encryption\Hooks\UserHooks')
 			->setConstructorArgs(
 				[
@@ -362,10 +500,12 @@ class UserHooksTest extends TestCase {
 					$this->utilMock,
 					$this->sessionMock,
 					$this->cryptMock,
-					$this->recoveryMock
+					$this->recoveryMock,
+					$this->eventDispatcher
 				]
 			)->setMethods(['setupFS'])->getMock();
 
+		$this->params = new GenericEvent(null, ['uid' => 'testUser', 'password' => 'password']);
 	}
 
 }

@@ -38,6 +38,8 @@ use OCP\IUserSession;
 use OCA\Encryption\Util;
 use OCA\Encryption\Session;
 use OCA\Encryption\Recovery;
+use Symfony\Component\EventDispatcher\EventDispatcher;
+use Symfony\Component\EventDispatcher\GenericEvent;
 
 class UserHooks implements IHook {
 	/**
@@ -78,6 +80,11 @@ class UserHooks implements IHook {
 	private $crypt;
 
 	/**
+	 * @var EventDispatcher
+	 */
+	private $eventDispatcher;
+
+	/**
 	 * UserHooks constructor.
 	 *
 	 * @param KeyManager $keyManager
@@ -98,7 +105,8 @@ class UserHooks implements IHook {
 								Util $util,
 								Session $session,
 								Crypt $crypt,
-								Recovery $recovery) {
+								Recovery $recovery,
+								EventDispatcher $eventDispatcher) {
 
 		$this->keyManager = $keyManager;
 		$this->userManager = $userManager;
@@ -109,6 +117,7 @@ class UserHooks implements IHook {
 		$this->session = $session;
 		$this->recovery = $recovery;
 		$this->crypt = $crypt;
+		$this->eventDispatcher = $eventDispatcher;
 	}
 
 	/**
@@ -117,30 +126,15 @@ class UserHooks implements IHook {
 	 * @return null
 	 */
 	public function addHooks() {
-		OCUtil::connectHook('OC_User', 'post_login', $this, 'login');
-		OCUtil::connectHook('OC_User', 'logout', $this, 'logout');
+		$this->eventDispatcher->addListener('user.beforelogin', [$this, 'login']);
+		$this->eventDispatcher->addListener('user.beforelogout', [$this, 'logout']);
 
 		// this hooks only make sense if no master key is used
 		if ($this->util->isMasterKeyEnabled() === false) {
-			OCUtil::connectHook('OC_User',
-				'post_setPassword',
-				$this,
-				'setPassphrase');
-
-			OCUtil::connectHook('OC_User',
-				'pre_setPassword',
-				$this,
-				'preSetPassphrase');
-
-			OCUtil::connectHook('OC_User',
-				'post_createUser',
-				$this,
-				'postCreateUser');
-
-			OCUtil::connectHook('OC_User',
-				'post_deleteUser',
-				$this,
-				'postDeleteUser');
+			$this->eventDispatcher->addListener('user.aftersetpassphrase', [$this, 'setPassphrase']);
+			$this->eventDispatcher->addListener('user.beforesetpassword', [$this, 'preSetPassphrase']);
+			$this->eventDispatcher->addListener('user.aftercreateuser', [$this, 'postCreateUser']);
+			$this->eventDispatcher->addListener('user.afterdelete', [$this, 'postDeleteUser']);
 		}
 	}
 
@@ -149,10 +143,10 @@ class UserHooks implements IHook {
 	 * Startup encryption backend upon user login
 	 *
 	 * @note This method should never be called for users using client side encryption
-	 * @param array $params
+	 * @param GenericEvent $params
 	 * @return boolean|null
 	 */
-	public function login($params) {
+	public function login(GenericEvent $params) {
 
 		if (!App::isEnabled('encryption')) {
 			return true;
@@ -160,13 +154,13 @@ class UserHooks implements IHook {
 
 		// ensure filesystem is loaded
 		if (!\OC\Files\Filesystem::$loaded) {
-			$this->setupFS($params['uid']);
+			$this->setupFS($params->getArgument('uid'));
 		}
 		if ($this->util->isMasterKeyEnabled() === false) {
-			$this->userSetup->setupUser($params['uid'], $params['password']);
+			$this->userSetup->setupUser($params->getArgument('uid'), $params->getArgument('password'));
 		}
 
-		$this->keyManager->init($params['uid'], $params['password']);
+		$this->keyManager->init($params->getArgument('uid'), $params->getArgument('password'));
 	}
 
 	/**
@@ -180,31 +174,31 @@ class UserHooks implements IHook {
 	 * setup encryption backend upon user created
 	 *
 	 * @note This method should never be called for users using client side encryption
-	 * @param array $params
+	 * @param GenericEvent $params
 	 */
 	public function postCreateUser($params) {
 
 		if (App::isEnabled('encryption')) {
-			$this->userSetup->setupUser($params['uid'], $params['password']);
+			$this->userSetup->setupUser($params->getArgument('uid'), $params->getArgument('password'));
 		}
 	}
 
 	/**
 	 * cleanup encryption backend upon user deleted
 	 *
-	 * @param array $params : uid, password
+	 * @param array GenericEvent $params : uid
 	 * @note This method should never be called for users using client side encryption
 	 */
-	public function postDeleteUser($params) {
+	public function postDeleteUser(GenericEvent $params) {
 
 		if (App::isEnabled('encryption')) {
 			/**
 			 * Adding a safe condition to make sure the uid is not
 			 * empty or null.
 			 */
-			if (!is_null($params['uid']) && ($params['uid'] !== '')) {
-				$this->keyManager->deletePublicKey($params['uid']);
-				\OC::$server->getEncryptionKeyStorage()->deleteAltUserStorageKeys($params['uid']);
+			if (!is_null($params->getArgument('uid')) && ($params->getArgument('uid') !== '')) {
+				$this->keyManager->deletePublicKey($params->getArgument('uid'));
+				\OC::$server->getEncryptionKeyStorage()->deleteAltUserStorageKeys($params->getArgument('uid'));
 			}
 		}
 
@@ -213,13 +207,13 @@ class UserHooks implements IHook {
 	/**
 	 * If the password can't be changed within ownCloud, than update the key password in advance.
 	 *
-	 * @param array $params : uid, password
+	 * @param GenericEvent $params : uid, password
 	 * @return boolean|null
 	 */
-	public function preSetPassphrase($params) {
+	public function preSetPassphrase(GenericEvent $params) {
 		if (App::isEnabled('encryption')) {
 
-			$user = $this->userManager->get($params['uid']);
+			$user = $this->userManager->get($params->getArgument('uid'));
 
 			if ($user && !$user->canChangePassword()) {
 				$this->setPassphrase($params);
@@ -230,20 +224,20 @@ class UserHooks implements IHook {
 	/**
 	 * Change a user's encryption passphrase
 	 *
-	 * @param array $params keys: uid, password
+	 * @param GenericEvent $params keys: uid, password
 	 * @return boolean|null
 	 */
-	public function setPassphrase($params) {
+	public function setPassphrase(GenericEvent $params) {
 
 		// Get existing decrypted private key
 		$privateKey = $this->session->getPrivateKey();
 		$user = $this->user->getUser();
 
 		// current logged in user changes his own password
-		if ($user && $params['uid'] === $user->getUID() && $privateKey) {
+		if ($user && $params->getArgument('uid') === $user->getUID() && $privateKey) {
 
 			// Encrypt private key with new user pwd as passphrase
-			$encryptedPrivateKey = $this->crypt->encryptPrivateKey($privateKey, $params['password'], $params['uid']);
+			$encryptedPrivateKey = $this->crypt->encryptPrivateKey($privateKey, $params->getArgument('password'), $params->getArgument('uid'));
 
 			// Save private key
 			if ($encryptedPrivateKey) {
@@ -257,9 +251,9 @@ class UserHooks implements IHook {
 			// private key has not changed, only the passphrase
 			// used to decrypt it has changed
 		} else { // admin changed the password for a different user, create new keys and re-encrypt file keys
-			$user = $params['uid'];
+			$user = $params->getArgument('uid');
 			$this->initMountPoints($user);
-			$recoveryPassword = isset($params['recoveryPassword']) ? $params['recoveryPassword'] : null;
+			$recoveryPassword = $params->hasArgument('recoveryPassword') ? $params->getArgument('recoveryPassword') : null;
 
 			// we generate new keys if...
 			// ...we have a recovery password and the user enabled the recovery key
@@ -274,7 +268,7 @@ class UserHooks implements IHook {
 				// backup old keys
 				//$this->backupAllKeys('recovery');
 
-				$newUserPassword = $params['password'];
+				$newUserPassword = $params->getArgument('password');
 
 				$keyPair = $this->crypt->createKeyPair();
 
